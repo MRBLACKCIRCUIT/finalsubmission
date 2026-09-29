@@ -15,7 +15,7 @@ env:
 
 jobs:
   lint:
-    name: Frontend Lint
+    name: Lint Frontend
     runs-on: ubuntu-latest
 
     defaults:
@@ -26,7 +26,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup NodeJS
         uses: actions/setup-node@v4
         with:
           node-version: 18
@@ -40,7 +40,7 @@ jobs:
         run: npm run lint
 
   test:
-    name: Frontend Test
+    name: Test Frontend
     runs-on: ubuntu-latest
 
     defaults:
@@ -51,7 +51,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup NodeJS
         uses: actions/setup-node@v4
         with:
           node-version: 18
@@ -62,14 +62,19 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test -- --watchAll=false
+        env:
+          CI: true
+        run: npm run test -- --watchAll=false
 
   build:
-    name: Frontend Build and Push
-    runs-on: ubuntu-latest
+    name: Build and Push Frontend
     needs:
       - lint
       - test
+    runs-on: ubuntu-latest
+
+    outputs:
+      registry: ${{ steps.login-ecr.outputs.registry }}
 
     steps:
       - name: Checkout code
@@ -86,21 +91,28 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
-        working-directory: starter/frontend
+      - name: Build and push frontend image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: frontend
+          IMAGE_TAG: ${{ github.sha }}
+          MOVIE_API_URL: http://k8s-default-backend-d3ab81effa-2e63817adef35fdd.elb.eu-north-1.amazonaws.com
+
         run: |
           docker build \
-            --build-arg REACT_APP_MOVIE_API_URL="${{ secrets.REACT_APP_MOVIE_API_URL }}" \
-            -t ${{ secrets.FRONTEND_ECR_REPOSITORY }}:${{ github.sha }} .
+            --build-arg=REACT_APP_MOVIE_API_URL="$MOVIE_API_URL" \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            starter/frontend
 
-      - name: Push Docker image
-        run: |
-          docker push ${{ secrets.FRONTEND_ECR_REPOSITORY }}:${{ github.sha }}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
   deploy:
-    name: Frontend Deploy
+    name: Deploy Frontend
+    needs:
+      - build
     runs-on: ubuntu-latest
-    needs: build
 
     steps:
       - name: Checkout code
@@ -113,25 +125,27 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Configure kubectl
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --name ${{ env.EKS_CLUSTER_NAME }} \
             --region ${{ env.AWS_REGION }}
 
-      - name: Update frontend image
+      - name: Install Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Set frontend image
         working-directory: starter/frontend/k8s
         run: |
-          kubectl kustomize edit set image \
-            frontend=${{ secrets.FRONTEND_ECR_REPOSITORY }}:${{ github.sha }}
+          kustomize edit set image \
+            frontend=${{ steps.login-ecr.outputs.registry }}/frontend:${{ github.sha }}
 
       - name: Deploy frontend
-        working-directory: starter/frontend/k8s
         run: |
-          kubectl apply -k .
-
-      - name: Verify deployment
-        run: |
-          kubectl rollout status deployment/frontend --timeout=180s
-          kubectl get pods
-          kubectl get svc frontend
+          kubectl apply -k starter/frontend/k8s
