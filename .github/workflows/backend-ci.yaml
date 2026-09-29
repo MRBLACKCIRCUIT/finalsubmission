@@ -69,14 +69,9 @@ jobs:
       - lint
       - test
 
-    defaults:
-      run:
-        working-directory: starter/backend
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-
       - name: Build Docker image
-        run: docker build -t backend:latest .
+        run: docker build -t backend:latest starter/backend
