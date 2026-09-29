@@ -6,8 +6,13 @@ WORKDIR /app
 
 COPY Pipfile Pipfile.lock ./
 
-RUN pip install --no-cache-dir pipenv && \
-    pipenv install --system --deploy
+RUN apk add --no-cache \
+    gcc \
+    musl-dev \
+    linux-headers \
+    && pip install --no-cache-dir pipenv \
+    && pipenv install --system --deploy \
+    && apk del gcc musl-dev linux-headers
 
 COPY . .
 
